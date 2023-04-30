@@ -335,23 +335,23 @@ std::map<int, TriQuadMesh> OptiXAggregate::PreparePLYMeshes(
             }
         } else if (shape.name == "dsphere") {
             LOG_VERBOSE("dsphere: reading parameters");
-            Float radius = parameters.GetOneFloat("radius", 1.f);
-            Float maxdispl = parameters.GetOneFloat("maxdispl", .1f);
+            Float radius = shape.parameters.GetOneFloat("radius", 1.f);
+            Float maxdispl = shape.parameters.GetOneFloat("maxdispl", .1f);
             std::string displacementTexName =
-                ResolveFilename(parameters.GetOneString("displacementmap", ""));
+                ResolveFilename(shape.parameters.GetOneString("displacementmap", ""));
             if (displacementTexName.empty())
-                ErrorExit(loc, "Parameter displacementmap is required.");
+                ErrorExit(&shape.loc, "Parameter displacementmap is required.");
 
             const TextureMapping2D mapping =
-                alloc.new_object<UVMapping>(1.f, 1.f, 0.f, 0.f);
+                shape.alloc.new_object<UVMapping>(1.f, 1.f, 0.f, 0.f);
             const MIPMapFilterOptions filterOptions = {FilterFunction::Bilinear, 8.f};
             const MIPMap *mipmap =
                 MIPMap::CreateFromFile(displacementTexName, filterOptions,
-                                       WrapMode::Repeat, ColorEncoding::Linear, alloc);
+                                       WrapMode::Repeat, ColorEncoding::Linear, shape.alloc);
 
             LOG_VERBOSE("dsphere: generating mesh");
             const Point2i resolution =
-                Image::Read(displacementTexName, alloc, ColorEncoding::Linear)
+                Image::Read(displacementTexName, shape.alloc, ColorEncoding::Linear)
                     .image.Resolution();
             const int segments = resolution.x;
             const int rings = resolution.y + 1;
