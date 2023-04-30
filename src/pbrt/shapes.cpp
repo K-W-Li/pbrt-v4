@@ -1491,6 +1491,275 @@ pstd::vector<Shape> Shape::Create(
                                            vertexIndices, P, alloc);
 
         shapes = Triangle::CreateTriangles(mesh, alloc);
+    } else if (name == "dsphere") {
+        LOG_VERBOSE("dsphere: reading parameters");
+        Float radius = parameters.GetOneFloat("radius", 1.f);
+        Float maxdispl = parameters.GetOneFloat("maxdispl", .1f);
+        std::string displacementTexName =
+            ResolveFilename(parameters.GetOneString("displacementmap", ""));
+        if (displacementTexName.empty())
+            ErrorExit(loc, "Parameter displacementmap is required.");
+
+        const TextureMapping2D mapping = alloc.new_object<UVMapping>(1.f, 1.f, 0.f, 0.f);
+        const MIPMapFilterOptions filterOptions = {FilterFunction::Bilinear, 8.f};
+        const MIPMap *mipmap =
+            MIPMap::CreateFromFile(displacementTexName, filterOptions, WrapMode::Repeat,
+                                   ColorEncoding::Linear, alloc);
+
+        LOG_VERBOSE("dsphere: generating mesh");
+        const Point2i resolution =
+            Image::Read(displacementTexName, alloc, ColorEncoding::Linear)
+                .image.Resolution();
+        const int segments = resolution.x;
+        const int rings = resolution.y + 1;
+
+        const int vertexCount = (segments << 1) + (segments + 1) * rings;
+        const int upper = segments;
+        const int lower = (segments + 1) * rings - 1;
+
+        TriQuadMesh sphereMesh;
+        sphereMesh.p.resize(vertexCount);
+        sphereMesh.n.resize(vertexCount);
+        sphereMesh.uv.resize(vertexCount);
+        sphereMesh.triIndices.resize(6 * segments);
+        sphereMesh.quadIndices.resize(4 * segments * (rings - 2));
+        ParallelFor(0, segments, [&](int i) {
+            // top
+            sphereMesh.p[i] = {0, 0, radius};
+            sphereMesh.n[i] = {0, 0, 1};
+            sphereMesh.uv[i] = Point2f((i + 0.5) / Float(segments), 1);
+            sphereMesh.triIndices[3 * i] = i;
+            sphereMesh.triIndices[3 * i + 1] = i + segments;
+            sphereMesh.triIndices[3 * i + 2] = i + segments + 1;
+            // bottom
+            sphereMesh.p[i + lower] = {0, 0, -radius};
+            sphereMesh.n[i + lower] = {0, 0, -1};
+            sphereMesh.uv[i + lower] = Point2f((i + 0.5) / Float(segments), 0);
+            sphereMesh.triIndices[3 * (i + segments)] = lower + i + segments;
+            sphereMesh.triIndices[3 * (i + segments) + 1] = lower + i;
+            sphereMesh.triIndices[3 * (i + segments) + 2] = lower + i - 1;
+        });
+        // center
+        ParallelFor(1, rings, [&](int j) {
+            const Float v = j / Float(rings);
+            const Float theta = Pi * v;
+            const Float st = std::sin(theta);
+            const Float ct = std::cos(theta);
+            // for (int i = 0; i <= segments; ++i) {
+            ParallelFor(0, segments + 1, [&](int i) {
+                const Float u = i / Float(segments);
+                const Float phi = 2 * Pi * u;
+                const Float sp = std::sin(phi);
+                const Float cp = std::cos(phi);
+                const Float x = st * cp;
+                const Float y = st * sp;
+                const Float z = ct;
+                const int offset = upper + i + (j - 1) * (segments + 1);
+                sphereMesh.p[offset] = {radius * x, radius * y, radius * z};
+                sphereMesh.n[offset] = {x, y, z};
+                sphereMesh.uv[offset] = {u, 1 - v};
+                if (j != rings - 1 && i != segments) {
+                    const int idx = 4 * (i + (j - 1) * segments);
+                    sphereMesh.quadIndices[idx] = offset;                     // v00
+                    sphereMesh.quadIndices[idx + 1] = offset + segments + 1;  // v01
+                    sphereMesh.quadIndices[idx + 2] = offset + 1;             // v10
+                    sphereMesh.quadIndices[idx + 3] = offset + segments + 2;  // v11
+                }
+            });
+            // }
+        });
+
+        // // top
+        // for (int i = 0; i < segments; ++i) {
+        //     sphereMesh.p.push_back({0, 0, radius});
+        //     sphereMesh.n.push_back({0, 0, 1});
+        //     sphereMesh.uv.push_back(Point2f((i + 0.5) / Float(segments), 1));
+        // }
+        // // center
+        // for (int j = 1; j < rings; ++j) {
+        //     const Float v = j / Float(rings);
+        //     const Float theta = Pi * v;
+        //     const Float st = std::sin(theta);
+        //     const Float ct = std::cos(theta);
+        //     for (int i = 0; i <= segments; ++i) {
+        //         const Float u = i / Float(segments);
+        //         const Float phi = 2 * Pi * u;
+        //         const Float sp = std::sin(phi);
+        //         const Float cp = std::cos(phi);
+        //         const Float x = st * cp;
+        //         const Float y = st * sp;
+        //         const Float z = ct;
+        //         sphereMesh.p.push_back({radius * x, radius * y, radius * z});
+        //         sphereMesh.n.push_back({x, y, z});
+        //         sphereMesh.uv.push_back({u, 1 - v});
+        //     }
+        // }
+        // // bottom
+        // for (int i = 0; i < segments; ++i) {
+        //     sphereMesh.p.push_back({0, 0, -radius});
+        //     sphereMesh.n.push_back({0, 0, -1});
+        //     sphereMesh.uv.push_back(Point2f((i + 0.5) / Float(segments), 0));
+        // }
+
+        // // top
+        // for (int i = 0; i < segments; ++i) {
+        //     sphereMesh.triIndices.push_back(i);
+        //     sphereMesh.triIndices.push_back(i + segments);
+        //     sphereMesh.triIndices.push_back(i + segments + 1);
+        // }
+        // // center
+        // for (int j = 1; j < rings - 1; ++j) {
+        //     for (int i = 0; i < segments; ++i) {
+        //         int v00 = upper + i + (j - 1) * (segments + 1);
+        //         sphereMesh.quadIndices.push_back(v00);
+        //         sphereMesh.quadIndices.push_back(v00 + segments + 1);
+        //         sphereMesh.quadIndices.push_back(v00 + 1);
+        //         sphereMesh.quadIndices.push_back(v00 + segments + 2);
+        //     }
+        // }
+        // // bottom
+        // start = segments + (rings - 2) * (segments + 1);
+        // for (int i = 0; i < segments; ++i) {
+        //     sphereMesh.triIndices.push_back(start + i + segments + 1);
+        //     sphereMesh.triIndices.push_back(start + i + 1);
+        //     sphereMesh.triIndices.push_back(start + i);
+        // }
+
+        LOG_VERBOSE("dsphere: displacing vertices");
+        ParallelFor(upper, lower, [&](int i) {
+            TextureEvalContext ctx;
+            ctx.p = sphereMesh.p[i];
+            ctx.uv = sphereMesh.uv[i];
+            TexCoord2D c = mapping.Map(ctx);
+            c.st[1] = 1 - c.st[1];
+            Float d = mipmap->Filter<Float>(c.st, {c.dsdx, c.dtdx}, {c.dsdy, c.dtdy});
+            sphereMesh.p[i] += Vector3f(radius * maxdispl * d * sphereMesh.n[i]);
+        });
+
+        LOG_VERBOSE("dsphere: calculating new normals");
+        // reset
+        ParallelFor(0, sphereMesh.n.size(),
+                    [&](int i) { sphereMesh.n[i] = Normal3f(0, 0, 0); });
+
+        // trimesh
+        ParallelFor(0, sphereMesh.triIndices.size() / 3, [&](int i) {
+            int v[3] = {
+                sphereMesh.triIndices[3 * i],
+                sphereMesh.triIndices[3 * i + 1],
+                sphereMesh.triIndices[3 * i + 2],
+            };
+            Vector3f v10 = sphereMesh.p[v[1]] - sphereMesh.p[v[0]];
+            Vector3f v21 = sphereMesh.p[v[2]] - sphereMesh.p[v[1]];
+            Normal3f vn(Cross(v10, v21));
+            if (LengthSquared(vn) > 0) {
+                vn = Normalize(vn);
+                sphereMesh.n[v[0]] += vn;
+                sphereMesh.n[v[1]] += vn;
+                sphereMesh.n[v[2]] += vn;
+            }
+        });
+        // for (size_t i = 0; i < sphereMesh.triIndices.size(); i += 3) {
+        //     int v[3] = {sphereMesh.triIndices[i], sphereMesh.triIndices[i + 1],
+        //                 sphereMesh.triIndices[i + 2]};
+        //     Vector3f v10 = sphereMesh.p[v[1]] - sphereMesh.p[v[0]];
+        //     Vector3f v21 = sphereMesh.p[v[2]] - sphereMesh.p[v[1]];
+        //     Normal3f vn(Cross(v10, v21));
+        //     if (LengthSquared(vn) > 0) {
+        //         vn = Normalize(vn);
+        //         sphereMesh.n[v[0]] += vn;
+        //         sphereMesh.n[v[1]] += vn;
+        //         sphereMesh.n[v[2]] += vn;
+        //     }
+        // }
+
+        // quadmesh
+        ParallelFor(0, sphereMesh.quadIndices.size() / 4, [&](int i) {
+            int v[4] = {
+                sphereMesh.quadIndices[4 * i],
+                sphereMesh.quadIndices[4 * i + 1],
+                sphereMesh.quadIndices[4 * i + 2],
+                sphereMesh.quadIndices[4 * i + 3],
+            };
+            Normal3f v00(Cross(sphereMesh.p[v[1]] - sphereMesh.p[v[0]],
+                               sphereMesh.p[v[2]] - sphereMesh.p[v[0]]));
+            Normal3f v10(Cross(sphereMesh.p[v[1]] - sphereMesh.p[v[0]],
+                               sphereMesh.p[v[3]] - sphereMesh.p[v[1]]));
+            Normal3f v01(Cross(sphereMesh.p[v[3]] - sphereMesh.p[v[2]],
+                               sphereMesh.p[v[3]] - sphereMesh.p[v[1]]));
+            Normal3f v11(Cross(sphereMesh.p[v[3]] - sphereMesh.p[v[2]],
+                               sphereMesh.p[v[2]] - sphereMesh.p[v[0]]));
+            if (LengthSquared(v00) > 0)
+                sphereMesh.n[v[0]] += Normalize(v00);
+            if (LengthSquared(v10) > 0)
+                sphereMesh.n[v[1]] += Normalize(v10);
+            if (LengthSquared(v01) > 0)
+                sphereMesh.n[v[2]] += Normalize(v01);
+            if (LengthSquared(v11) > 0)
+                sphereMesh.n[v[3]] += Normalize(v11);
+        });
+        // for (size_t i = 0; i < sphereMesh.quadIndices.size(); i += 4) {
+        //     int v[4] = {sphereMesh.quadIndices[i], sphereMesh.quadIndices[i + 1],
+        //                 sphereMesh.quadIndices[i + 2], sphereMesh.quadIndices[i + 3]};
+        //     Normal3f v0(Cross(sphereMesh.p[v[1]] - sphereMesh.p[v[0]],
+        //                       sphereMesh.p[v[2]] - sphereMesh.p[v[0]]));
+        //     Normal3f v1(Cross(sphereMesh.p[v[1]] - sphereMesh.p[v[0]],
+        //                       sphereMesh.p[v[3]] - sphereMesh.p[v[1]]));
+        //     Normal3f v2(Cross(sphereMesh.p[v[3]] - sphereMesh.p[v[2]],
+        //                       sphereMesh.p[v[3]] - sphereMesh.p[v[1]]));
+        //     Normal3f v3(Cross(sphereMesh.p[v[3]] - sphereMesh.p[v[2]],
+        //                       sphereMesh.p[v[2]] - sphereMesh.p[v[0]]));
+        //     if (LengthSquared(v0) > 0)
+        //         sphereMesh.n[v[0]] += Normalize(v0);
+        //     if (LengthSquared(v1) > 0)
+        //         sphereMesh.n[v[1]] += Normalize(v1);
+        //     if (LengthSquared(v2) > 0)
+        //         sphereMesh.n[v[2]] += Normalize(v2);
+        //     if (LengthSquared(v3) > 0)
+        //         sphereMesh.n[v[3]] += Normalize(v3);
+        // }
+
+        // fix top
+        Normal3f top = Normal3f(0, 0, 0);
+        for (int i = 0; i < upper; ++i)
+            top += sphereMesh.n[i];
+        ParallelFor(0, upper, [&](int i) { sphereMesh.n[i] = top; });
+
+        // fix center
+        ParallelFor(0, rings - 1, [&](int i) {
+            const int v = upper + i * (segments + 1);
+            sphereMesh.n[v] += sphereMesh.n[v + segments];
+            sphereMesh.n[v + segments] = sphereMesh.n[v];
+        });
+
+        // fix bottom
+        Normal3f bottom = Normal3f(0, 0, 0);
+        for (int i = lower; i < lower + segments; ++i)
+            bottom += sphereMesh.n[i];
+        ParallelFor(lower, lower + segments, [&](int i) { sphereMesh.n[i] = bottom; });
+
+        // normalise
+        ParallelFor(0, sphereMesh.n.size(), [&](int i) {
+            if (LengthSquared(sphereMesh.n[i]) > 0)
+                sphereMesh.n[i] = Normalize(sphereMesh.n[i]);
+        });
+
+        LOG_VERBOSE("dsphere: converting to primitives");
+        if (!sphereMesh.triIndices.empty()) {
+            TriangleMesh *mesh = alloc.new_object<TriangleMesh>(
+                *renderFromObject, reverseOrientation, sphereMesh.triIndices,
+                sphereMesh.p, std::vector<Vector3f>(), sphereMesh.n, sphereMesh.uv,
+                sphereMesh.faceIndices, alloc);
+            shapes = Triangle::CreateTriangles(mesh, alloc);
+        }
+        if (!sphereMesh.quadIndices.empty()) {
+            BilinearPatchMesh *mesh = alloc.new_object<BilinearPatchMesh>(
+                *renderFromObject, reverseOrientation, sphereMesh.quadIndices,
+                sphereMesh.p, sphereMesh.n, sphereMesh.uv, sphereMesh.faceIndices,
+                nullptr /* image dist */, alloc);
+            pstd::vector<Shape> quadMesh = BilinearPatch::CreatePatches(mesh, alloc);
+            shapes.insert(shapes.end(), quadMesh.begin(), quadMesh.end());
+        }
+        LOG_VERBOSE("dsphere: finish");
     } else
         ErrorExit(loc, "%s: shape type unknown.", name);
 
