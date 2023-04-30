@@ -1625,7 +1625,7 @@ OptiXAggregate::OptiXAggregate(
 
     LOG_VERBOSE("Starting to read PLY meshes");
     std::map<int, TriQuadMesh> plyMeshes =
-        PreparePLYMeshes(scene.shapes, textures.floatTextures);
+        PreparePLYMeshes(scene.shapes, textures.floatTextures, threadAllocators);
     LOG_VERBOSE("Finished reading PLY meshes");
 
     struct GAS {
