@@ -94,7 +94,8 @@ class OptiXAggregate : public WavefrontAggregate {
                                              int nDiceV, Allocator alloc);
 
     static BVH buildBVHForBLPs(
-        const std::vector<ShapeSceneEntity> &shapes, OptixDeviceContext optixContext,
+        const std::vector<ShapeSceneEntity> &shapes,
+        const std::map<int, TriQuadMesh> &plyMeshes, OptixDeviceContext optixContext,
         const OptixProgramGroup &intersectPG, const OptixProgramGroup &shadowPG,
         const OptixProgramGroup &randomHitPG,
         const std::map<std::string, FloatTexture> &floatTextures,
