@@ -60,7 +60,8 @@ class OptiXAggregate : public WavefrontAggregate {
     // within its class, so it's public...
     static std::map<int, TriQuadMesh> PreparePLYMeshes(
         const std::vector<ShapeSceneEntity> &shapes,
-        const std::map<std::string, FloatTexture> &floatTextures);
+        const std::map<std::string, FloatTexture> &floatTextures,
+        ThreadLocal<Allocator> &threadAllocators);
 
   private:
     struct HitgroupRecord;
