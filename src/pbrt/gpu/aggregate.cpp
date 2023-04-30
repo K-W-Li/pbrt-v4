@@ -258,77 +258,338 @@ std::map<int, TriQuadMesh> OptiXAggregate::PreparePLYMeshes(
     std::mutex mutex;
     ParallelFor(0, shapes.size(), [&](int64_t i) {
         const auto &shape = shapes[i];
-        if (shape.name != "plymesh")
-            return;
+        if (shape.name == "plymesh") {
+            std::string filename =
+                ResolveFilename(shape.parameters.GetOneString("filename", ""));
+            if (filename.empty())
+                ErrorExit(&shape.loc, "plymesh: \"filename\" must be provided.");
+            TriQuadMesh plyMesh = TriQuadMesh::ReadPLY(filename);  // todo: alloc
+            if (!plyMesh.triIndices.empty() || !plyMesh.quadIndices.empty()) {
+                plyMesh.ConvertToOnlyTriangles();
 
-        std::string filename =
-            ResolveFilename(shape.parameters.GetOneString("filename", ""));
-        if (filename.empty())
-            ErrorExit(&shape.loc, "plymesh: \"filename\" must be provided.");
-        TriQuadMesh plyMesh = TriQuadMesh::ReadPLY(filename);  // todo: alloc
-        if (!plyMesh.triIndices.empty() || !plyMesh.quadIndices.empty()) {
-            plyMesh.ConvertToOnlyTriangles();
+                Float edgeLength = shape.parameters.GetOneFloat("edgelength", 1.f);
+                edgeLength *= Options->displacementEdgeScale;
 
-            Float edgeLength = shape.parameters.GetOneFloat("edgelength", 1.f);
-            edgeLength *= Options->displacementEdgeScale;
+                std::string displacementTexName =
+                    shape.parameters.GetTexture("displacement");
+                if (!displacementTexName.empty()) {
+                    auto iter = floatTextures.find(displacementTexName);
+                    if (iter == floatTextures.end())
+                        ErrorExit(&shape.loc, "%s: no such texture defined.",
+                                  displacementTexName);
+                    FloatTexture displacement = iter->second;
 
-            std::string displacementTexName = shape.parameters.GetTexture("displacement");
-            if (!displacementTexName.empty()) {
-                auto iter = floatTextures.find(displacementTexName);
-                if (iter == floatTextures.end())
-                    ErrorExit(&shape.loc, "%s: no such texture defined.",
-                              displacementTexName);
-                FloatTexture displacement = iter->second;
+                    LOG_VERBOSE("Starting to displace mesh \"%s\" with \"%s\"", filename,
+                                displacementTexName);
 
-                LOG_VERBOSE("Starting to displace mesh \"%s\" with \"%s\"", filename,
-                            displacementTexName);
+                    size_t origNumTris = plyMesh.triIndices.size() / 3;
 
-                size_t origNumTris = plyMesh.triIndices.size() / 3;
+                    plyMesh = plyMesh.Displace(
+                        [&](Point3f v0, Point3f v1) {
+                            v0 = (*shape.renderFromObject)(v0);
+                            v1 = (*shape.renderFromObject)(v1);
+                            return Distance(v0, v1);
+                        },
+                        edgeLength,
+                        [&](Point3f *pCPU, const Normal3f *nCPU, const Point2f *uvCPU,
+                            int nVertices) {
+                            Point3f *p;
+                            Normal3f *n;
+                            Point2f *uv;
+                            CUDA_CHECK(
+                                cudaMallocManaged(&p, nVertices * sizeof(Point3f)));
+                            CUDA_CHECK(
+                                cudaMallocManaged(&n, nVertices * sizeof(Normal3f)));
+                            CUDA_CHECK(
+                                cudaMallocManaged(&uv, nVertices * sizeof(Point2f)));
 
-                plyMesh = plyMesh.Displace(
-                    [&](Point3f v0, Point3f v1) {
-                        v0 = (*shape.renderFromObject)(v0);
-                        v1 = (*shape.renderFromObject)(v1);
-                        return Distance(v0, v1);
-                    },
-                    edgeLength,
-                    [&](Point3f *pCPU, const Normal3f *nCPU, const Point2f *uvCPU,
-                        int nVertices) {
-                        Point3f *p;
-                        Normal3f *n;
-                        Point2f *uv;
-                        CUDA_CHECK(cudaMallocManaged(&p, nVertices * sizeof(Point3f)));
-                        CUDA_CHECK(cudaMallocManaged(&n, nVertices * sizeof(Normal3f)));
-                        CUDA_CHECK(cudaMallocManaged(&uv, nVertices * sizeof(Point2f)));
+                            std::memcpy(p, pCPU, nVertices * sizeof(Point3f));
+                            std::memcpy(n, nCPU, nVertices * sizeof(Normal3f));
+                            std::memcpy(uv, uvCPU, nVertices * sizeof(Point2f));
 
-                        std::memcpy(p, pCPU, nVertices * sizeof(Point3f));
-                        std::memcpy(n, nCPU, nVertices * sizeof(Normal3f));
-                        std::memcpy(uv, uvCPU, nVertices * sizeof(Point2f));
+                            GPUParallelFor(
+                                "Evaluate Displacement", nVertices, [=] PBRT_GPU(int i) {
+                                    TextureEvalContext ctx;
+                                    ctx.p = p[i];
+                                    ctx.uv = uv[i];
+                                    Float d =
+                                        UniversalTextureEvaluator()(displacement, ctx);
+                                    p[i] += Vector3f(d * n[i]);
+                                });
+                            GPUWait();
 
-                        GPUParallelFor(
-                            "Evaluate Displacement", nVertices, [=] PBRT_GPU(int i) {
-                                TextureEvalContext ctx;
-                                ctx.p = p[i];
-                                ctx.uv = uv[i];
-                                Float d = UniversalTextureEvaluator()(displacement, ctx);
-                                p[i] += Vector3f(d * n[i]);
-                            });
-                        GPUWait();
+                            std::memcpy(pCPU, p, nVertices * sizeof(Point3f));
 
-                        std::memcpy(pCPU, p, nVertices * sizeof(Point3f));
+                            CUDA_CHECK(cudaFree(p));
+                            CUDA_CHECK(cudaFree(n));
+                            CUDA_CHECK(cudaFree(uv));
+                        },
+                        &shape.loc);
 
-                        CUDA_CHECK(cudaFree(p));
-                        CUDA_CHECK(cudaFree(n));
-                        CUDA_CHECK(cudaFree(uv));
-                    },
-                    &shape.loc);
+                    displacedTrisDelta += plyMesh.triIndices.size() / 3 - origNumTris;
 
-                displacedTrisDelta += plyMesh.triIndices.size() / 3 - origNumTris;
-
-                LOG_VERBOSE("Finished displacing mesh \"%s\" with \"%s\" -> %d tris",
-                            filename, displacementTexName, plyMesh.triIndices.size() / 3);
+                    LOG_VERBOSE("Finished displacing mesh \"%s\" with \"%s\" -> %d tris",
+                                filename, displacementTexName,
+                                plyMesh.triIndices.size() / 3);
+                }
             }
-        }
+        } else if (shape.name == "dsphere") {
+            LOG_VERBOSE("dsphere: reading parameters");
+            Float radius = parameters.GetOneFloat("radius", 1.f);
+            Float maxdispl = parameters.GetOneFloat("maxdispl", .1f);
+            std::string displacementTexName =
+                ResolveFilename(parameters.GetOneString("displacementmap", ""));
+            if (displacementTexName.empty())
+                ErrorExit(loc, "Parameter displacementmap is required.");
+
+            const TextureMapping2D mapping =
+                alloc.new_object<UVMapping>(1.f, 1.f, 0.f, 0.f);
+            const MIPMapFilterOptions filterOptions = {FilterFunction::Bilinear, 8.f};
+            const MIPMap *mipmap =
+                MIPMap::CreateFromFile(displacementTexName, filterOptions,
+                                       WrapMode::Repeat, ColorEncoding::Linear, alloc);
+
+            LOG_VERBOSE("dsphere: generating mesh");
+            const Point2i resolution =
+                Image::Read(displacementTexName, alloc, ColorEncoding::Linear)
+                    .image.Resolution();
+            const int segments = resolution.x;
+            const int rings = resolution.y + 1;
+
+            const int vertexCount = (segments << 1) + (segments + 1) * rings;
+            const int upper = segments;
+            const int lower = (segments + 1) * rings - 1;
+
+            TriQuadMesh plyMesh;
+            plyMesh.p.resize(vertexCount);
+            plyMesh.n.resize(vertexCount);
+            plyMesh.uv.resize(vertexCount);
+            plyMesh.triIndices.resize(6 * segments);
+            plyMesh.quadIndices.resize(4 * segments * (rings - 2));
+            ParallelFor(0, segments, [&](int i) {
+                // top
+                plyMesh.p[i] = {0, 0, radius};
+                plyMesh.n[i] = {0, 0, 1};
+                plyMesh.uv[i] = Point2f((i + 0.5) / Float(segments), 1);
+                plyMesh.triIndices[3 * i] = i;
+                plyMesh.triIndices[3 * i + 1] = i + segments;
+                plyMesh.triIndices[3 * i + 2] = i + segments + 1;
+                // bottom
+                plyMesh.p[i + lower] = {0, 0, -radius};
+                plyMesh.n[i + lower] = {0, 0, -1};
+                plyMesh.uv[i + lower] = Point2f((i + 0.5) / Float(segments), 0);
+                plyMesh.triIndices[3 * (i + segments)] = lower + i + segments;
+                plyMesh.triIndices[3 * (i + segments) + 1] = lower + i;
+                plyMesh.triIndices[3 * (i + segments) + 2] = lower + i - 1;
+            });
+            // center
+            ParallelFor(1, rings, [&](int j) {
+                const Float v = j / Float(rings);
+                const Float theta = Pi * v;
+                const Float st = std::sin(theta);
+                const Float ct = std::cos(theta);
+                // for (int i = 0; i <= segments; ++i) {
+                ParallelFor(0, segments + 1, [&](int i) {
+                    const Float u = i / Float(segments);
+                    const Float phi = 2 * Pi * u;
+                    const Float sp = std::sin(phi);
+                    const Float cp = std::cos(phi);
+                    const Float x = st * cp;
+                    const Float y = st * sp;
+                    const Float z = ct;
+                    const int offset = upper + i + (j - 1) * (segments + 1);
+                    plyMesh.p[offset] = {radius * x, radius * y, radius * z};
+                    plyMesh.n[offset] = {x, y, z};
+                    plyMesh.uv[offset] = {u, 1 - v};
+                    if (j != rings - 1 && i != segments) {
+                        const int idx = 4 * (i + (j - 1) * segments);
+                        plyMesh.quadIndices[idx] = offset;                     // v00
+                        plyMesh.quadIndices[idx + 1] = offset + segments + 1;  // v01
+                        plyMesh.quadIndices[idx + 2] = offset + 1;             // v10
+                        plyMesh.quadIndices[idx + 3] = offset + segments + 2;  // v11
+                    }
+                });
+                // }
+            });
+
+            // // top
+            // for (int i = 0; i < segments; ++i) {
+            //     plyMesh.p.push_back({0, 0, radius});
+            //     plyMesh.n.push_back({0, 0, 1});
+            //     plyMesh.uv.push_back(Point2f((i + 0.5) / Float(segments), 1));
+            // }
+            // // center
+            // for (int j = 1; j < rings; ++j) {
+            //     const Float v = j / Float(rings);
+            //     const Float theta = Pi * v;
+            //     const Float st = std::sin(theta);
+            //     const Float ct = std::cos(theta);
+            //     for (int i = 0; i <= segments; ++i) {
+            //         const Float u = i / Float(segments);
+            //         const Float phi = 2 * Pi * u;
+            //         const Float sp = std::sin(phi);
+            //         const Float cp = std::cos(phi);
+            //         const Float x = st * cp;
+            //         const Float y = st * sp;
+            //         const Float z = ct;
+            //         plyMesh.p.push_back({radius * x, radius * y, radius * z});
+            //         plyMesh.n.push_back({x, y, z});
+            //         plyMesh.uv.push_back({u, 1 - v});
+            //     }
+            // }
+            // // bottom
+            // for (int i = 0; i < segments; ++i) {
+            //     plyMesh.p.push_back({0, 0, -radius});
+            //     plyMesh.n.push_back({0, 0, -1});
+            //     plyMesh.uv.push_back(Point2f((i + 0.5) / Float(segments), 0));
+            // }
+
+            // // top
+            // for (int i = 0; i < segments; ++i) {
+            //     plyMesh.triIndices.push_back(i);
+            //     plyMesh.triIndices.push_back(i + segments);
+            //     plyMesh.triIndices.push_back(i + segments + 1);
+            // }
+            // // center
+            // for (int j = 1; j < rings - 1; ++j) {
+            //     for (int i = 0; i < segments; ++i) {
+            //         int v00 = upper + i + (j - 1) * (segments + 1);
+            //         plyMesh.quadIndices.push_back(v00);
+            //         plyMesh.quadIndices.push_back(v00 + segments + 1);
+            //         plyMesh.quadIndices.push_back(v00 + 1);
+            //         plyMesh.quadIndices.push_back(v00 + segments + 2);
+            //     }
+            // }
+            // // bottom
+            // start = segments + (rings - 2) * (segments + 1);
+            // for (int i = 0; i < segments; ++i) {
+            //     plyMesh.triIndices.push_back(start + i + segments + 1);
+            //     plyMesh.triIndices.push_back(start + i + 1);
+            //     plyMesh.triIndices.push_back(start + i);
+            // }
+
+            LOG_VERBOSE("dsphere: displacing vertices");
+            ParallelFor(upper, lower, [&](int i) {
+                TextureEvalContext ctx;
+                ctx.p = plyMesh.p[i];
+                ctx.uv = plyMesh.uv[i];
+                TexCoord2D c = mapping.Map(ctx);
+                c.st[1] = 1 - c.st[1];
+                Float d = mipmap->Filter<Float>(c.st, {c.dsdx, c.dtdx}, {c.dsdy, c.dtdy});
+                plyMesh.p[i] += Vector3f(radius * maxdispl * d * plyMesh.n[i]);
+            });
+
+            LOG_VERBOSE("dsphere: calculating new normals");
+            // reset
+            ParallelFor(0, plyMesh.n.size(),
+                        [&](int i) { plyMesh.n[i] = Normal3f(0, 0, 0); });
+
+            // trimesh
+            ParallelFor(0, plyMesh.triIndices.size() / 3, [&](int i) {
+                int v[3] = {
+                    plyMesh.triIndices[3 * i],
+                    plyMesh.triIndices[3 * i + 1],
+                    plyMesh.triIndices[3 * i + 2],
+                };
+                Vector3f v10 = plyMesh.p[v[1]] - plyMesh.p[v[0]];
+                Vector3f v21 = plyMesh.p[v[2]] - plyMesh.p[v[1]];
+                Normal3f vn(Cross(v10, v21));
+                if (LengthSquared(vn) > 0) {
+                    vn = Normalize(vn);
+                    plyMesh.n[v[0]] += vn;
+                    plyMesh.n[v[1]] += vn;
+                    plyMesh.n[v[2]] += vn;
+                }
+            });
+            // for (size_t i = 0; i < plyMesh.triIndices.size(); i += 3) {
+            //     int v[3] = {plyMesh.triIndices[i], plyMesh.triIndices[i + 1],
+            //                 plyMesh.triIndices[i + 2]};
+            //     Vector3f v10 = plyMesh.p[v[1]] - plyMesh.p[v[0]];
+            //     Vector3f v21 = plyMesh.p[v[2]] - plyMesh.p[v[1]];
+            //     Normal3f vn(Cross(v10, v21));
+            //     if (LengthSquared(vn) > 0) {
+            //         vn = Normalize(vn);
+            //         plyMesh.n[v[0]] += vn;
+            //         plyMesh.n[v[1]] += vn;
+            //         plyMesh.n[v[2]] += vn;
+            //     }
+            // }
+
+            // quadmesh
+            ParallelFor(0, plyMesh.quadIndices.size() / 4, [&](int i) {
+                int v[4] = {
+                    plyMesh.quadIndices[4 * i],
+                    plyMesh.quadIndices[4 * i + 1],
+                    plyMesh.quadIndices[4 * i + 2],
+                    plyMesh.quadIndices[4 * i + 3],
+                };
+                Normal3f v00(Cross(plyMesh.p[v[1]] - plyMesh.p[v[0]],
+                                   plyMesh.p[v[2]] - plyMesh.p[v[0]]));
+                Normal3f v10(Cross(plyMesh.p[v[1]] - plyMesh.p[v[0]],
+                                   plyMesh.p[v[3]] - plyMesh.p[v[1]]));
+                Normal3f v01(Cross(plyMesh.p[v[3]] - plyMesh.p[v[2]],
+                                   plyMesh.p[v[3]] - plyMesh.p[v[1]]));
+                Normal3f v11(Cross(plyMesh.p[v[3]] - plyMesh.p[v[2]],
+                                   plyMesh.p[v[2]] - plyMesh.p[v[0]]));
+                if (LengthSquared(v00) > 0)
+                    plyMesh.n[v[0]] += Normalize(v00);
+                if (LengthSquared(v10) > 0)
+                    plyMesh.n[v[1]] += Normalize(v10);
+                if (LengthSquared(v01) > 0)
+                    plyMesh.n[v[2]] += Normalize(v01);
+                if (LengthSquared(v11) > 0)
+                    plyMesh.n[v[3]] += Normalize(v11);
+            });
+            // for (size_t i = 0; i < plyMesh.quadIndices.size(); i += 4) {
+            //     int v[4] = {plyMesh.quadIndices[i], plyMesh.quadIndices[i + 1],
+            //                 plyMesh.quadIndices[i + 2], plyMesh.quadIndices[i +
+            //                 3]};
+            //     Normal3f v0(Cross(plyMesh.p[v[1]] - plyMesh.p[v[0]],
+            //                       plyMesh.p[v[2]] - plyMesh.p[v[0]]));
+            //     Normal3f v1(Cross(plyMesh.p[v[1]] - plyMesh.p[v[0]],
+            //                       plyMesh.p[v[3]] - plyMesh.p[v[1]]));
+            //     Normal3f v2(Cross(plyMesh.p[v[3]] - plyMesh.p[v[2]],
+            //                       plyMesh.p[v[3]] - plyMesh.p[v[1]]));
+            //     Normal3f v3(Cross(plyMesh.p[v[3]] - plyMesh.p[v[2]],
+            //                       plyMesh.p[v[2]] - plyMesh.p[v[0]]));
+            //     if (LengthSquared(v0) > 0)
+            //         plyMesh.n[v[0]] += Normalize(v0);
+            //     if (LengthSquared(v1) > 0)
+            //         plyMesh.n[v[1]] += Normalize(v1);
+            //     if (LengthSquared(v2) > 0)
+            //         plyMesh.n[v[2]] += Normalize(v2);
+            //     if (LengthSquared(v3) > 0)
+            //         plyMesh.n[v[3]] += Normalize(v3);
+            // }
+
+            // fix top
+            Normal3f top = Normal3f(0, 0, 0);
+            for (int i = 0; i < upper; ++i)
+                top += plyMesh.n[i];
+            ParallelFor(0, upper, [&](int i) { plyMesh.n[i] = top; });
+
+            // fix center
+            ParallelFor(0, rings - 1, [&](int i) {
+                const int v = upper + i * (segments + 1);
+                plyMesh.n[v] += plyMesh.n[v + segments];
+                plyMesh.n[v + segments] = plyMesh.n[v];
+            });
+
+            // fix bottom
+            Normal3f bottom = Normal3f(0, 0, 0);
+            for (int i = lower; i < lower + segments; ++i)
+                bottom += plyMesh.n[i];
+            ParallelFor(lower, lower + segments,
+                        [&](int i) { plyMesh.n[i] = bottom; });
+
+            // normalise
+            ParallelFor(0, plyMesh.n.size(), [&](int i) {
+                if (LengthSquared(plyMesh.n[i]) > 0)
+                    plyMesh.n[i] = Normalize(plyMesh.n[i]);
+            });
+            LOG_VERBOSE("dsphere: finish");
+        } else
+            return;
 
         std::lock_guard<std::mutex> lock(mutex);
         plyMeshes[i] = std::move(plyMesh);
