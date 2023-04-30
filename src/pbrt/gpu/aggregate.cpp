@@ -1017,7 +1017,8 @@ BilinearPatchMesh *OptiXAggregate::diceCurveToBLP(const ShapeSceneEntity &shape,
 }
 
 OptiXAggregate::BVH OptiXAggregate::buildBVHForBLPs(
-    const std::vector<ShapeSceneEntity> &shapes, OptixDeviceContext optixContext,
+    const std::vector<ShapeSceneEntity> &shapes,
+    const std::map<int, TriQuadMesh> &plyMeshes, OptixDeviceContext optixContext,
     const OptixProgramGroup &intersectPG, const OptixProgramGroup &shadowPG,
     const OptixProgramGroup &randomHitPG,
     const std::map<std::string, FloatTexture> &floatTextures,
@@ -1662,7 +1663,7 @@ OptiXAggregate::OptiXAggregate(
 
     AsyncJob<GAS> *blpJob = RunAsync([&]() {
         BVH blpBVH =
-            buildBVHForBLPs(scene.shapes, optixContext, hitPGBilinearPatch,
+            buildBVHForBLPs(scene.shapes, meshes, optixContext, hitPGBilinearPatch,
                             anyhitPGShadowBilinearPatch, hitPGRandomHitBilinearPatch,
                             textures.floatTextures, namedMaterials, materials, media,
                             shapeIndexToAreaLights, threadAllocators, threadCUDAStreams);
@@ -1727,7 +1728,7 @@ OptiXAggregate::OptiXAggregate(
         }
 
         BVH blpBVH =
-            buildBVHForBLPs(def.second->shapes, optixContext, hitPGBilinearPatch,
+            buildBVHForBLPs(def.second->shapes, meshes, optixContext, hitPGBilinearPatch,
                             anyhitPGShadowBilinearPatch, hitPGRandomHitBilinearPatch,
                             textures.floatTextures, namedMaterials, materials, media, {},
                             threadAllocators, threadCUDAStreams);
