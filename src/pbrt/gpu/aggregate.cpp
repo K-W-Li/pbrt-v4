@@ -24,6 +24,7 @@
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
+#include "pbrt/pbrt.h"
 
 #include <optix.h>
 #include <optix_function_table_definition.h>
@@ -253,7 +254,8 @@ STAT_COUNTER("Geometry/Triangles added from displacement mapping", displacedTris
 
 std::map<int, TriQuadMesh> OptiXAggregate::PreparePLYMeshes(
     const std::vector<ShapeSceneEntity> &shapes,
-    const std::map<std::string, FloatTexture> &floatTextures) {
+    const std::map<std::string, FloatTexture> &floatTextures,
+    ThreadLocal<Allocator> &threadAllocators) {
     std::map<int, TriQuadMesh> plyMeshes;
     std::mutex mutex;
     ParallelFor(0, shapes.size(), [&](int64_t i) {
@@ -335,6 +337,7 @@ std::map<int, TriQuadMesh> OptiXAggregate::PreparePLYMeshes(
             }
         } else if (shape.name == "dsphere") {
             LOG_VERBOSE("dsphere: reading parameters");
+            Allocator alloc = threadAllocators.Get();
             Float radius = shape.parameters.GetOneFloat("radius", 1.f);
             Float maxdispl = shape.parameters.GetOneFloat("maxdispl", .1f);
             std::string displacementTexName =
@@ -343,15 +346,15 @@ std::map<int, TriQuadMesh> OptiXAggregate::PreparePLYMeshes(
                 ErrorExit(&shape.loc, "Parameter displacementmap is required.");
 
             const TextureMapping2D mapping =
-                shape.alloc.new_object<UVMapping>(1.f, 1.f, 0.f, 0.f);
+                alloc.new_object<UVMapping>(1.f, 1.f, 0.f, 0.f);
             const MIPMapFilterOptions filterOptions = {FilterFunction::Bilinear, 8.f};
             const MIPMap *mipmap =
                 MIPMap::CreateFromFile(displacementTexName, filterOptions,
-                                       WrapMode::Repeat, ColorEncoding::Linear, shape.alloc);
+                                       WrapMode::Repeat, ColorEncoding::Linear, alloc);
 
             LOG_VERBOSE("dsphere: generating mesh");
             const Point2i resolution =
-                Image::Read(displacementTexName, shape.alloc, ColorEncoding::Linear)
+                Image::Read(displacementTexName, alloc, ColorEncoding::Linear)
                     .image.Resolution();
             const int segments = resolution.x;
             const int rings = resolution.y + 1;
@@ -579,8 +582,7 @@ std::map<int, TriQuadMesh> OptiXAggregate::PreparePLYMeshes(
             Normal3f bottom = Normal3f(0, 0, 0);
             for (int i = lower; i < lower + segments; ++i)
                 bottom += plyMesh.n[i];
-            ParallelFor(lower, lower + segments,
-                        [&](int i) { plyMesh.n[i] = bottom; });
+            ParallelFor(lower, lower + segments, [&](int i) { plyMesh.n[i] = bottom; });
 
             // normalise
             ParallelFor(0, plyMesh.n.size(), [&](int i) {
@@ -1691,8 +1693,8 @@ OptiXAggregate::OptiXAggregate(
 
         Instance inst;
 
-        std::map<int, TriQuadMesh> meshes =
-            PreparePLYMeshes(def.second->shapes, textures.floatTextures);
+        std::map<int, TriQuadMesh> meshes = PreparePLYMeshes(
+            def.second->shapes, textures.floatTextures, threadAllocators);
 
         BVH triangleBVH = buildBVHForTriangles(
             def.second->shapes, meshes, optixContext, hitPGTriangle,
