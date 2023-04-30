@@ -73,7 +73,9 @@ struct __align__(OPTIX_SBT_RECORD_ALIGNMENT) MissRecord {
 
 struct __align__(OPTIX_SBT_RECORD_ALIGNMENT) OptiXAggregate::HitgroupRecord {
     HitgroupRecord() {}
-    HitgroupRecord(const HitgroupRecord &r) { memcpy(this, &r, sizeof(HitgroupRecord)); }
+    HitgroupRecord(const HitgroupRecord &r) {
+        memcpy(this, &r, sizeof(HitgroupRecord));
+    }
     HitgroupRecord &operator=(const HitgroupRecord &r) {
         if (this != &r)
             memcpy(this, &r, sizeof(HitgroupRecord));
@@ -267,8 +269,7 @@ std::map<int, TriQuadMesh> OptiXAggregate::PreparePLYMeshes(
         if (!plyMesh.triIndices.empty() || !plyMesh.quadIndices.empty()) {
             plyMesh.ConvertToOnlyTriangles();
 
-            Float edgeLength =
-                shape.parameters.GetOneFloat("edgelength", 1.f);
+            Float edgeLength = shape.parameters.GetOneFloat("edgelength", 1.f);
             edgeLength *= Options->displacementEdgeScale;
 
             std::string displacementTexName = shape.parameters.GetTexture("displacement");
@@ -465,7 +466,8 @@ OptiXAggregate::BVH OptiXAggregate::buildBVHForTriangles(
             input.triangleArray.numIndexTriplets = mesh->nTriangles;
             int *indicesGPU;
             CUDA_CHECK(cudaMalloc(&indicesGPU, mesh->nTriangles * 3 * sizeof(int)));
-            CUDA_CHECK(cudaMemcpy(indicesGPU, mesh->vertexIndices, mesh->nTriangles * 3 * sizeof(int),
+            CUDA_CHECK(cudaMemcpy(indicesGPU, mesh->vertexIndices,
+                                  mesh->nTriangles * 3 * sizeof(int),
                                   cudaMemcpyHostToDevice));
             input.triangleArray.indexBuffer = CUdeviceptr(indicesGPU);
 
@@ -1076,13 +1078,10 @@ OptixModule OptiXAggregate::createOptiXModule(OptixDeviceContext optixContext,
 #define OPTIX_MODULE_CREATE_FN optixModuleCreateFromPTX
 #endif
 
-    OPTIX_CHECK_WITH_LOG(
-        OPTIX_MODULE_CREATE_FN(
-            optixContext, &moduleCompileOptions, &pipelineCompileOptions,
-            ptx, strlen(ptx), log, &logSize, &optixModule
-        ),
-        log
-    );
+    OPTIX_CHECK_WITH_LOG(OPTIX_MODULE_CREATE_FN(optixContext, &moduleCompileOptions,
+                                                &pipelineCompileOptions, ptx, strlen(ptx),
+                                                log, &logSize, &optixModule),
+                         log);
 
     LOG_VERBOSE("%s", log);
 
@@ -1278,7 +1277,7 @@ OptiXAggregate::OptiXAggregate(
 #else
     pipelineLinkOptions.debugLevel = OPTIX_COMPILE_DEBUG_LEVEL_NONE;
 #endif
-#endif // OPTIX_VERSION
+#endif  // OPTIX_VERSION
 
     OPTIX_CHECK_WITH_LOG(
         optixPipelineCreate(optixContext, &pipelineCompileOptions, &pipelineLinkOptions,
@@ -1358,7 +1357,7 @@ OptiXAggregate::OptiXAggregate(
         if (shape.name != "sphere" && shape.name != "cylinder" && shape.name != "disk" &&
             shape.name != "trianglemesh" && shape.name != "plymesh" &&
             shape.name != "loopsubdiv" && shape.name != "bilinearmesh" &&
-            shape.name != "curve")
+            shape.name != "curve" && shape.name != "dsphere")
             ErrorExit(&shape.loc, "%s: unknown shape", shape.name);
 
     LOG_VERBOSE("Starting to read PLY meshes");
