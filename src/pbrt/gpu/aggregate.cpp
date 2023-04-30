@@ -260,12 +260,13 @@ std::map<int, TriQuadMesh> OptiXAggregate::PreparePLYMeshes(
     std::mutex mutex;
     ParallelFor(0, shapes.size(), [&](int64_t i) {
         const auto &shape = shapes[i];
+        TriQuadMesh plyMesh;
         if (shape.name == "plymesh") {
             std::string filename =
                 ResolveFilename(shape.parameters.GetOneString("filename", ""));
             if (filename.empty())
                 ErrorExit(&shape.loc, "plymesh: \"filename\" must be provided.");
-            TriQuadMesh plyMesh = TriQuadMesh::ReadPLY(filename);  // todo: alloc
+            plyMesh = TriQuadMesh::ReadPLY(filename);  // todo: alloc
             if (!plyMesh.triIndices.empty() || !plyMesh.quadIndices.empty()) {
                 plyMesh.ConvertToOnlyTriangles();
 
@@ -363,7 +364,6 @@ std::map<int, TriQuadMesh> OptiXAggregate::PreparePLYMeshes(
             const int upper = segments;
             const int lower = (segments + 1) * rings - 1;
 
-            TriQuadMesh plyMesh;
             plyMesh.p.resize(vertexCount);
             plyMesh.n.resize(vertexCount);
             plyMesh.uv.resize(vertexCount);
