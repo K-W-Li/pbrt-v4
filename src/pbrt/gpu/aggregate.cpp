@@ -1067,7 +1067,7 @@ OptiXAggregate::BVH OptiXAggregate::buildBVHForBLPs(
             CHECK(plyIter != plyMeshes.end());
             const TriQuadMesh &plyMesh = plyIter->second;
             BilinearPatchMesh *mesh = alloc.new_object<BilinearPatchMesh>(
-                shape.renderFromObject, shape.reverseOrientation, plyMesh.quadIndices,
+                *shape.renderFromObject, shape.reverseOrientation, plyMesh.quadIndices,
                 plyMesh.p, plyMesh.n, plyMesh.uv, plyMesh.faceIndices,
                 nullptr /* image dist */, alloc);
             meshes[meshIndex] = mesh;
