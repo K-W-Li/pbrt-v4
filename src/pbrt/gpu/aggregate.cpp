@@ -616,7 +616,7 @@ OptiXAggregate::BVH OptiXAggregate::buildBVHForTriangles(
     for (size_t i = 0; i < shapes.size(); ++i) {
         const auto &shape = shapes[i];
         if (shape.name == "trianglemesh" || shape.name == "plymesh" ||
-            shape.name == "loopsubdiv")
+            shape.name == "loopsubdiv" || shape.name == "dsphere")
             meshIndexToShapeIndex.push_back(i);
     }
 
@@ -680,6 +680,14 @@ OptiXAggregate::BVH OptiXAggregate::buildBVHForTriangles(
                           filename);
             }
 
+            mesh = alloc.new_object<TriangleMesh>(
+                *shape.renderFromObject, shape.reverseOrientation, plyMesh.triIndices,
+                plyMesh.p, std::vector<Vector3f>(), plyMesh.n, plyMesh.uv,
+                plyMesh.faceIndices, alloc);
+        } else if (shape.name == "dsphere") {
+            auto plyIter = plyMeshes.find(shapeIndex);
+            CHECK(plyIter != plyMeshes.end());
+            const TriQuadMesh &plyMesh = plyIter->second;
             mesh = alloc.new_object<TriangleMesh>(
                 *shape.renderFromObject, shape.reverseOrientation, plyMesh.triIndices,
                 plyMesh.p, std::vector<Vector3f>(), plyMesh.n, plyMesh.uv,
@@ -1022,7 +1030,8 @@ OptiXAggregate::BVH OptiXAggregate::buildBVHForBLPs(
     std::vector<size_t> meshIndexToShapeIndex;
     for (size_t i = 0; i < shapes.size(); ++i) {
         const auto &shape = shapes[i];
-        if (shape.name == "bilinearmesh" || shape.name == "curve")
+        if (shape.name == "bilinearmesh" || shape.name == "curve" ||
+            shape.name == "dsphere")
             meshIndexToShapeIndex.push_back(i);
     }
 
@@ -1052,6 +1061,16 @@ OptiXAggregate::BVH OptiXAggregate::buildBVHForBLPs(
                 meshes[meshIndex] = curveMesh;
                 nPatches += curveMesh->nPatches;
             }
+        } else if (shape.name == "dsphere") {
+            auto plyIter = plyMeshes.find(shapeIndex);
+            CHECK(plyIter != plyMeshes.end());
+            const TriQuadMesh &plyMesh = plyIter->second;
+            BilinearPatchMesh *mesh = alloc.new_object<BilinearPatchMesh>(
+                *renderFromObject, reverseOrientation, plyMesh.quadIndices, plyMesh.p,
+                plyMesh.n, plyMesh.uv, plyMesh.faceIndices, nullptr /* image dist */,
+                alloc);
+            meshes[meshIndex] = mesh;
+            nPatches += mesh->nPatches;
         }
     });
 
